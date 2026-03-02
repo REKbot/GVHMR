@@ -3,6 +3,7 @@ import torch
 import pytorch_lightning as pl
 import numpy as np
 import argparse
+import math
 from hmr4d.utils.pylogger import Log
 import hydra
 from hydra import initialize_config_module, compose
@@ -59,6 +60,18 @@ def parse_args_to_cfg():
         default=None,
         help="Output FPS. If not provided, inferred from input video metadata (fallback to 30 when unavailable).",
     )
+    parser.add_argument(
+        "--begin_seconds",
+        type=float,
+        default=None,
+        help="Optional start time (seconds, decimal allowed) for frame-accurate clipping before processing.",
+    )
+    parser.add_argument(
+        "--end_seconds",
+        type=float,
+        default=None,
+        help="Optional end time (seconds, decimal allowed) for frame-accurate clipping before processing.",
+    )
     args = parser.parse_args()
 
     # Input
@@ -79,12 +92,46 @@ def parse_args_to_cfg():
             input_fps = 30.0
             Log.warning(f"[Input FPS]: failed to infer from video ({e}); fallback to {input_fps:.1f}")
 
+    begin_seconds = args.begin_seconds
+    end_seconds = args.end_seconds
+    if begin_seconds is not None and begin_seconds < 0:
+        raise ValueError(f"--begin_seconds must be >= 0, got {begin_seconds}")
+    if end_seconds is not None and end_seconds < 0:
+        raise ValueError(f"--end_seconds must be >= 0, got {end_seconds}")
+    if begin_seconds is not None and end_seconds is not None and end_seconds <= begin_seconds:
+        raise ValueError(
+            f"--end_seconds must be greater than --begin_seconds, got {end_seconds} <= {begin_seconds}"
+        )
+
+    clip_start_frame = 0 if begin_seconds is None else int(math.floor(begin_seconds * input_fps))
+    clip_end_frame = length if end_seconds is None else int(math.ceil(end_seconds * input_fps))
+    clip_start_frame = min(max(clip_start_frame, 0), length)
+    clip_end_frame = min(max(clip_end_frame, clip_start_frame), length)
+    clip_length = clip_end_frame - clip_start_frame
+    if clip_length <= 0:
+        raise ValueError(
+            f"Clip range is empty after rounding to frames: start={clip_start_frame}, end={clip_end_frame}, "
+            f"fps={input_fps:.3f}, video_length={length}"
+        )
+
     Log.info(f"[Input]: {video_path}")
     Log.info(f"(L, W, H) = ({length}, {width}, {height})")
+    if begin_seconds is not None or end_seconds is not None:
+        Log.info(
+            f"[Clip]: seconds=({begin_seconds}, {end_seconds}), frames=[{clip_start_frame}, {clip_end_frame}), "
+            f"length={clip_length}"
+        )
+
+    clip_tag = ""
+    if begin_seconds is not None or end_seconds is not None:
+        begin_tag = "start" if begin_seconds is None else f"{begin_seconds:g}"
+        end_tag = "end" if end_seconds is None else f"{end_seconds:g}"
+        clip_tag = f"_clip_{begin_tag}_{end_tag}"
+
     # Cfg
     with initialize_config_module(version_base="1.3", config_module=f"hmr4d.configs"):
         overrides = [
-            f"video_name={video_path.stem}",
+            f"video_name={video_path.stem}{clip_tag}",
             f"static_cam={args.static_cam}",
             f"verbose={args.verbose}",
             f"use_dpvo={args.use_dpvo}",
@@ -106,14 +153,64 @@ def parse_args_to_cfg():
 
     # Copy raw-input-video to video_path
     Log.info(f"[Copy Video] {video_path} -> {cfg.video_path}")
-    if not Path(cfg.video_path).exists() or get_video_lwh(video_path)[0] != get_video_lwh(cfg.video_path)[0]:
-        reader = get_video_reader(video_path)
-        writer = get_writer(cfg.video_path, fps=cfg.fps, crf=CRF)
-        for img in tqdm(reader, total=get_video_lwh(video_path)[0], desc=f"Copy"):
-            writer.write_frame(img)
-        writer.close()
-        reader.close()
+    output_video_path = Path(cfg.video_path)
+    should_rebuild_video = not output_video_path.exists()
 
+    if not should_rebuild_video:
+        try:
+            output_length = get_video_lwh(output_video_path)[0]
+            should_rebuild_video = output_length != clip_length
+            if should_rebuild_video:
+                Log.warning(
+                    f"[Copy Video] Existing output length mismatch ({output_length} vs {clip_length}); rebuilding {output_video_path}"
+                )
+        except Exception as e:
+            should_rebuild_video = True
+            Log.warning(f"[Copy Video] Existing output video is invalid ({e}); rebuilding {output_video_path}")
+
+    if should_rebuild_video:
+        tmp_output_path = output_video_path.with_name(f"{output_video_path.stem}.tmp{output_video_path.suffix}")
+        if tmp_output_path.exists():
+            tmp_output_path.unlink()
+
+        reader = get_video_reader(video_path)
+        writer = get_writer(tmp_output_path, fps=cfg.fps, crf=CRF)
+        try:
+            for frame_idx, img in tqdm(enumerate(reader), total=length, desc="Copy"):
+                if frame_idx < clip_start_frame:
+                    continue
+                if frame_idx >= clip_end_frame:
+                    break
+                writer.write_frame(img)
+        finally:
+            writer.close()
+            reader.close()
+
+        # Validate the temporary output before replacing any existing output file
+        is_valid_tmp = True
+        try:
+            tmp_output_length = get_video_lwh(tmp_output_path)[0]
+            if tmp_output_length != clip_length:
+                is_valid_tmp = False
+                Log.error(
+                    f"[Copy Video] Temp output length mismatch ({tmp_output_length} vs {clip_length}); "
+                    f"keeping existing {output_video_path} and deleting temp {tmp_output_path}"
+                )
+        except Exception as e:
+            is_valid_tmp = False
+            Log.error(
+                f"[Copy Video] Temp output video is invalid ({e}); "
+                f"keeping existing {output_video_path} and deleting temp {tmp_output_path}"
+            )
+
+        if not is_valid_tmp:
+            try:
+                if tmp_output_path.exists():
+                    tmp_output_path.unlink()
+            except Exception as cleanup_err:
+                Log.warning(f"[Copy Video] Failed to delete invalid temp file {tmp_output_path}: {cleanup_err}")
+        else:
+            tmp_output_path.replace(output_video_path)
     return cfg
 
 

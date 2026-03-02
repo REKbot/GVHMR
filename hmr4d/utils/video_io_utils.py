@@ -3,9 +3,22 @@ import numpy as np
 import torch
 from pathlib import Path
 import shutil
+from fractions import Fraction
 import ffmpeg
 from tqdm import tqdm
 import cv2
+
+
+def _normalize_fps_for_pyav(fps, max_denominator=1001):
+    """Convert fps to a pyav-friendly rational value.
+
+    PyAV converts floats to AVRational using exact float representation, which can
+    overflow for values like 119.951 due to large numerators/denominators.
+    """
+    fps_float = float(fps)
+    if fps_float <= 1e-6:
+        raise ValueError(f"Invalid fps value: {fps}")
+    return Fraction(fps_float).limit_denominator(max_denominator)
 
 
 def get_video_lwh(video_path):
@@ -88,6 +101,8 @@ def save_video(images, video_path, fps=30, crf=17):
     elif isinstance(images, list):
         images = np.array(images).astype(np.uint8)
 
+    fps = _normalize_fps_for_pyav(fps)
+
     with iio.imopen(video_path, "w", plugin="pyav") as writer:
         writer.init_video_stream("libx264", fps=fps)
         writer._video_stream.options = {"crf": str(crf)}
@@ -96,6 +111,7 @@ def save_video(images, video_path, fps=30, crf=17):
 
 def get_writer(video_path, fps=30, crf=17):
     """remember to .close()"""
+    fps = _normalize_fps_for_pyav(fps)
     writer = iio.imopen(video_path, "w", plugin="pyav")
     writer.init_video_stream("libx264", fps=fps)
     writer._video_stream.options = {"crf": str(crf)}
