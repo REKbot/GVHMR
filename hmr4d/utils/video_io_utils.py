@@ -13,6 +13,19 @@ def get_video_lwh(video_path):
     return L, W, H
 
 
+def get_video_fps(video_path):
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video for fps query: {video_path}")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps is None or fps <= 1e-6:
+            raise RuntimeError(f"Failed to infer valid fps from video: {video_path}")
+        return float(fps)
+    finally:
+        cap.release()
+
+
 def read_video_np(video_path, start_frame=0, end_frame=-1, scale=1.0):
     """
     Args:
