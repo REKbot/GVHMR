@@ -344,7 +344,7 @@ if __name__ == "__main__":
         tic = Log.sync_time()
         pred = model.predict(data, static_cam=cfg.static_cam)
         pred = detach_to_cpu(pred)
-        data_time = data["length"] / cfg.fps
+        data_time = data["length"].item() / cfg.fps
         Log.info(f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s")
         torch.save(pred, paths.hmr4d_results)
 
