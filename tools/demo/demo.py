@@ -180,6 +180,7 @@ def parse_args_to_cfg():
 
         reader = get_video_reader(video_path)
         writer = get_writer(tmp_output_path, fps=cfg.fps, crf=CRF)
+        written_frames = 0
         try:
             for frame_idx, img in tqdm(enumerate(reader), total=length, desc="Copy"):
                 if frame_idx < clip_start_frame:
@@ -187,6 +188,7 @@ def parse_args_to_cfg():
                 if frame_idx >= clip_end_frame:
                     break
                 writer.write_frame(img)
+                written_frames += 1
         finally:
             writer.close()
             reader.close()
@@ -195,11 +197,16 @@ def parse_args_to_cfg():
         is_valid_tmp = True
         try:
             tmp_output_length = get_video_lwh(tmp_output_path)[0]
-            if tmp_output_length != clip_length:
+            if tmp_output_length != written_frames:
                 is_valid_tmp = False
                 Log.error(
-                    f"[Copy Video] Temp output length mismatch ({tmp_output_length} vs {clip_length}); "
+                    f"[Copy Video] Temp output length mismatch ({tmp_output_length} vs {written_frames}); "
                     f"keeping existing {output_video_path} and deleting temp {tmp_output_path}"
+                )
+            elif written_frames < clip_length:
+                Log.warning(
+                    f"[Copy Video] Requested {clip_length} frames but decoded {written_frames}. "
+                    "Input may have missing/corrupt frames near the end; continuing with decoded subset."
                 )
         except Exception as e:
             is_valid_tmp = False
