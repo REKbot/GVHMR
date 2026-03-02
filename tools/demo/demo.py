@@ -83,14 +83,19 @@ def parse_args_to_cfg():
         input_fps = float(args.fps)
         if input_fps <= 0:
             raise ValueError(f"--fps must be positive, got {input_fps}")
-        Log.info(f"[Input FPS]: from --fps = {input_fps:.3f}")
+        rounded_input_fps = int(round(input_fps))
+        Log.info(f"[Input FPS]: from --fps = {rounded_input_fps}")
     else:
         try:
             input_fps = get_video_fps(video_path)
-            Log.info(f"[Input FPS]: inferred from video metadata = {input_fps:.3f}")
+            rounded_input_fps = int(round(input_fps))
+            Log.info(f"[Input FPS]: inferred from video metadata = {rounded_input_fps}")
         except Exception as e:
             input_fps = 30.0
+            rounded_input_fps = int(round(input_fps))
             Log.warning(f"[Input FPS]: failed to infer from video ({e}); fallback to {input_fps:.1f}")
+
+    input_fps = float(rounded_input_fps)
 
     begin_seconds = args.begin_seconds
     end_seconds = args.end_seconds
