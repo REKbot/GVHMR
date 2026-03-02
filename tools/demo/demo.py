@@ -12,6 +12,7 @@ from pytorch3d.transforms import quaternion_to_matrix
 from hmr4d.configs import register_store_gvhmr
 from hmr4d.utils.video_io_utils import (
     get_video_lwh,
+    get_video_fps,
     read_video_np,
     save_video,
     merge_videos_horizontal,
@@ -52,12 +53,32 @@ def parse_args_to_cfg():
         "If the camera zoom in a lot, you can try 135, 200 or even larger values.",
     )
     parser.add_argument("--verbose", action="store_true", help="If true, draw intermediate results")
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Output FPS. If not provided, inferred from input video metadata (fallback to 30 when unavailable).",
+    )
     args = parser.parse_args()
 
     # Input
     video_path = Path(args.video)
     assert video_path.exists(), f"Video not found at {video_path}"
     length, width, height = get_video_lwh(video_path)
+    input_fps = None
+    if args.fps is not None:
+        input_fps = float(args.fps)
+        if input_fps <= 0:
+            raise ValueError(f"--fps must be positive, got {input_fps}")
+        Log.info(f"[Input FPS]: from --fps = {input_fps:.3f}")
+    else:
+        try:
+            input_fps = get_video_fps(video_path)
+            Log.info(f"[Input FPS]: inferred from video metadata = {input_fps:.3f}")
+        except Exception as e:
+            input_fps = 30.0
+            Log.warning(f"[Input FPS]: failed to infer from video ({e}); fallback to {input_fps:.1f}")
+
     Log.info(f"[Input]: {video_path}")
     Log.info(f"(L, W, H) = ({length}, {width}, {height})")
     # Cfg
@@ -67,6 +88,7 @@ def parse_args_to_cfg():
             f"static_cam={args.static_cam}",
             f"verbose={args.verbose}",
             f"use_dpvo={args.use_dpvo}",
+            f"fps={input_fps}",
         ]
         if args.f_mm is not None:
             overrides.append(f"f_mm={args.f_mm}")
@@ -86,7 +108,7 @@ def parse_args_to_cfg():
     Log.info(f"[Copy Video] {video_path} -> {cfg.video_path}")
     if not Path(cfg.video_path).exists() or get_video_lwh(video_path)[0] != get_video_lwh(cfg.video_path)[0]:
         reader = get_video_reader(video_path)
-        writer = get_writer(cfg.video_path, fps=30, crf=CRF)
+        writer = get_writer(cfg.video_path, fps=cfg.fps, crf=CRF)
         for img in tqdm(reader, total=get_video_lwh(video_path)[0], desc=f"Copy"):
             writer.write_frame(img)
         writer.close()
@@ -227,7 +249,7 @@ def render_incam(cfg):
 
     # -- render mesh -- #
     verts_incam = pred_c_verts
-    writer = get_writer(incam_video_path, fps=30, crf=CRF)
+    writer = get_writer(incam_video_path, fps=cfg.fps, crf=CRF)
     for i, img_raw in tqdm(enumerate(reader), total=get_video_lwh(video_path)[0], desc=f"Rendering Incam"):
         img = renderer.render_mesh(verts_incam[i].cuda(), img_raw, [0.8, 0.8, 0.8])
 
@@ -295,7 +317,7 @@ def render_global(cfg):
     color = torch.ones(3).float().cuda() * 0.8
 
     render_length = length if not debug_cam else 8
-    writer = get_writer(global_video_path, fps=30, crf=CRF)
+    writer = get_writer(global_video_path, fps=cfg.fps, crf=CRF)
     for i in tqdm(range(render_length), desc=f"Rendering Global"):
         cameras = renderer.create_camera(global_R[i], global_T[i])
         img = renderer.render_with_ground(verts_glob[[i]], color[None], cameras, global_lights)
@@ -322,7 +344,7 @@ if __name__ == "__main__":
         tic = Log.sync_time()
         pred = model.predict(data, static_cam=cfg.static_cam)
         pred = detach_to_cpu(pred)
-        data_time = data["length"] / 30
+        data_time = data["length"] / cfg.fps
         Log.info(f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s")
         torch.save(pred, paths.hmr4d_results)
 
