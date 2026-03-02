@@ -228,15 +228,24 @@ def run_preprocess(cfg):
     static_cam = cfg.static_cam
     verbose = cfg.verbose
 
-    # Get bbx tracking result
-    if not Path(paths.bbx).exists():
+    def _compute_and_save_bbx():
         tracker = Tracker()
         bbx_xyxy = tracker.get_one_track(video_path).float()  # (L, 4)
         bbx_xys = get_bbx_xys_from_xyxy(bbx_xyxy, base_enlarge=1.2).float()  # (L, 3) apply aspect ratio and enlarge
         torch.save({"bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys}, paths.bbx)
         del tracker
+
+    # Get bbx tracking result
+    if not Path(paths.bbx).exists():
+        _compute_and_save_bbx()
     else:
-        bbx_xys = torch.load(paths.bbx)["bbx_xys"]
+        try:
+            bbx_xys = torch.load(paths.bbx)["bbx_xys"]
+        except (EOFError, RuntimeError, KeyError) as e:
+            Log.warning(f"[Preprocess] Invalid bbx cache {paths.bbx} ({e}); recomputing")
+            Path(paths.bbx).unlink(missing_ok=True)
+            _compute_and_save_bbx()
+            bbx_xys = torch.load(paths.bbx)["bbx_xys"]
         Log.info(f"[Preprocess] bbx (xyxy, xys) from {paths.bbx}")
     if verbose:
         video = read_video_np(video_path)
