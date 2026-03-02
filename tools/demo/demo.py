@@ -186,8 +186,31 @@ def parse_args_to_cfg():
             writer.close()
             reader.close()
 
-        tmp_output_path.replace(output_video_path)
+        # Validate the temporary output before replacing any existing output file
+        is_valid_tmp = True
+        try:
+            tmp_output_length = get_video_lwh(tmp_output_path)[0]
+            if tmp_output_length != clip_length:
+                is_valid_tmp = False
+                Log.error(
+                    f"[Copy Video] Temp output length mismatch ({tmp_output_length} vs {clip_length}); "
+                    f"keeping existing {output_video_path} and deleting temp {tmp_output_path}"
+                )
+        except Exception as e:
+            is_valid_tmp = False
+            Log.error(
+                f"[Copy Video] Temp output video is invalid ({e}); "
+                f"keeping existing {output_video_path} and deleting temp {tmp_output_path}"
+            )
 
+        if not is_valid_tmp:
+            try:
+                if tmp_output_path.exists():
+                    tmp_output_path.unlink()
+            except Exception as cleanup_err:
+                Log.warning(f"[Copy Video] Failed to delete invalid temp file {tmp_output_path}: {cleanup_err}")
+        else:
+            tmp_output_path.replace(output_video_path)
     return cfg
 
 
